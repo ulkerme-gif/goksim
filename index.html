@@ -1,0 +1,264 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>GökSim · tarayıcıda uçuş simülatörü</title>
+  <meta name="description" content="Gerçek uydu görüntülü dünya üzerinde tarayıcıda çalışan ücretsiz uçuş simülatörü.">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='-12 -12 24 24'%3E%3Cpath fill='%23d24ca9' d='M0,-10 L2,-3 L9,1 L9,3 L2,1.5 L1.5,7 L4,9 L4,10 L-4,10 L-4,9 L-1.5,7 L-2,1.5 L-9,3 L-9,1 L-2,-3 Z'/%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=B612:wght@400;700&family=B612+Mono:wght@400;700&display=swap">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/cesium@1.145.0/Build/Cesium/Widgets/widgets.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <div id="cesium"></div>
+  <div id="hud" class="hud" aria-hidden="true"></div>
+  <div id="toasts" role="status" aria-live="polite"></div>
+  <div id="yoke-cross" aria-hidden="true"></div>
+
+  <section id="mapbox" class="mapbox" hidden aria-label="Harita">
+    <header>
+      <span class="mb-title">Harita</span>
+      <label class="chk"><input type="checkbox" id="map-follow" checked> Uçağı takip et</label>
+      <button class="x" id="map-close" aria-label="Haritayı kapat">×</button>
+    </header>
+    <div id="map"></div>
+    <footer>
+      <span>Sağ tıklayın ya da</span>
+      <button class="btn small" id="map-center-go">ortaya ışınlanın</button>
+    </footer>
+  </section>
+
+  <aside id="drawer" hidden>
+    <header>
+      <h2 id="drawer-title"></h2>
+      <button class="x" id="drawer-close" aria-label="Paneli kapat">×</button>
+    </header>
+    <div class="drawer-body">
+      <section data-panel="aircraft" data-title="Uçak seç" hidden>
+        <p class="lead">Uçak değişince aynı yerden yeniden başlarsınız.</p>
+        <div id="ac-list" class="ac-list"></div>
+      </section>
+
+      <section data-panel="location" data-title="Konum" hidden>
+        <label class="field">
+          <span>Havalimanı ara</span>
+          <input id="loc-q" type="search" placeholder="LTFM, IST, Antalya, Innsbruck…" autocomplete="off" spellcheck="false">
+        </label>
+        <p id="loc-results-title" class="sub"></p>
+        <div id="loc-results" class="results"></div>
+        <details class="coords">
+          <summary>Koordinata git</summary>
+          <div class="grid2">
+            <label class="field"><span>Enlem</span><input id="coord-lat" inputmode="decimal" placeholder="41.0082"></label>
+            <label class="field"><span>Boylam</span><input id="coord-lon" inputmode="decimal" placeholder="28.9784"></label>
+            <label class="field"><span>Yerden yükseklik (ft, 0 = yerde)</span><input id="coord-alt" type="number" value="2000" min="0" step="100"></label>
+            <label class="field"><span>Baş (°)</span><input id="coord-hdg" type="number" value="0" min="0" max="359"></label>
+          </div>
+          <button class="btn primary" id="coord-go">Bu koordinata git</button>
+        </details>
+      </section>
+
+      <section data-panel="camera" data-title="Kamera" hidden>
+        <div class="cam-grid">
+          <button class="cam-btn" data-cam="chase"><b>Takip</b><span>Uçağın arkasından. Sürükleyerek çevirin, tekerlekle yaklaşın.</span><kbd>1</kbd></button>
+          <button class="cam-btn" data-cam="cockpit"><b>Kokpit</b><span>Pilot gözünden. Sürükleyerek etrafa bakın.</span><kbd>2</kbd></button>
+          <button class="cam-btn" data-cam="orbit"><b>Serbest</b><span>Uçağın çevresinde fareyle serbestçe dolaşın.</span><kbd>3</kbd></button>
+          <button class="cam-btn" data-cam="tower"><b>Kule</b><span>Yerdeki bir noktadan uçağı izleyin.</span><kbd>4</kbd></button>
+        </div>
+        <button class="btn" id="cam-reset">Kamerayı sıfırla</button>
+        <p class="sub">Çift tıklama da kamerayı sıfırlar. C tuşu modlar arasında geçer.</p>
+      </section>
+
+      <section data-panel="autopilot" data-title="Otopilot" hidden>
+        <button class="btn ap-toggle" id="ap-toggle" aria-pressed="false">Otopilotu aç</button>
+        <div class="ap-rows">
+          <div class="ap-row"><label for="ap-spd">Hız <small>kt</small></label><button class="step" data-ap-step="spd:-10">−</button><input id="ap-spd" data-ap="spd" type="number"><button class="step" data-ap-step="spd:10">+</button></div>
+          <div class="ap-row" id="ap-alt-row"><label for="ap-alt">İrtifa <small>ft</small></label><button class="step" data-ap-step="alt:-500">−</button><input id="ap-alt" data-ap="alt" type="number"><button class="step" data-ap-step="alt:500">+</button></div>
+          <div class="ap-row" id="ap-vs-row"><label for="ap-vs">Dikey hız <small>ft/dk</small></label><button class="step" data-ap-step="vs:-100">−</button><input id="ap-vs" data-ap="vs" type="number"><button class="step" data-ap-step="vs:100">+</button></div>
+          <div class="ap-row"><label for="ap-hdg">Baş <small>°</small></label><button class="step" data-ap-step="hdg:-10">−</button><input id="ap-hdg" data-ap="hdg" type="number"><button class="step" data-ap-step="hdg:10">+</button></div>
+        </div>
+        <button class="btn" id="ap-sync">Şu anki değerleri al</button>
+        <p class="sub" id="ap-note"></p>
+      </section>
+
+      <section data-panel="settings" data-title="Ayarlar" hidden>
+        <fieldset>
+          <legend>Gerçekçilik</legend>
+          <label class="chk"><input type="checkbox" id="set-realistic"> Gerçekçi mod</label>
+          <p class="sub">Açıkken pistte motor kapalı ve park freni çekili başlarsınız, motoru çalıştırmak zaman alır. Yakıt tükenir ve uçak hafifler. Pervane torku kalkışta sola çeker, otomatik dümen kapanır. Aşırı G, azami hız, flap ve iniş takımı hız sınırları hasar ya da kırılmaya yol açar. Stall daha sert, iniş takımı daha az affedicidir.</p>
+        </fieldset>
+        <fieldset>
+          <legend>Görünüm</legend>
+          <label class="field"><span>Harita katmanı</span>
+            <select id="set-imagery">
+              <option value="esri">Uydu görüntüsü</option>
+              <option value="esri-labels">Uydu + yer adları</option>
+              <option value="osm">OpenStreetMap haritası</option>
+            </select></label>
+          <label class="field"><span>Grafik kalitesi</span>
+            <select id="set-quality">
+              <option value="low">Düşük (eski cihazlar)</option>
+              <option value="mid">Orta</option>
+              <option value="high">Yüksek</option>
+            </select></label>
+          <label class="field"><span>Bulutlar</span>
+            <select id="set-clouds">
+              <option value="none">Yok</option>
+              <option value="few">Az</option>
+              <option value="many">Çok</option>
+            </select></label>
+          <label class="chk"><input type="checkbox" id="set-shadows"> Gölgeler</label>
+          <label class="chk"><input type="checkbox" id="set-realtime"> Gerçek saat ve güneş (gece uçuşu olabilir)</label>
+          <label class="chk"><input type="checkbox" id="set-hud"> Sol üstte uçuş bilgileri</label>
+        </fieldset>
+        <fieldset>
+          <legend>3D arazi ve binalar</legend>
+          <p class="sub">Dağlar ve binalar için ücretsiz bir <a href="https://ion.cesium.com/signup" target="_blank" rel="noopener">Cesium ion</a> hesabı açıp "Access Tokens" sayfasındaki anahtarı buraya yapıştırın.</p>
+          <div class="tok-row">
+            <input id="set-token" type="password" placeholder="Cesium ion erişim anahtarı" autocomplete="off" spellcheck="false">
+            <button class="btn primary" id="set-token-save">Kaydet</button>
+          </div>
+          <p class="sub" id="token-state"></p>
+          <label class="chk"><input type="checkbox" id="set-terrain"> 3D arazi (dağlar, vadiler)</label>
+          <label class="chk"><input type="checkbox" id="set-buildings"> 3D binalar (çarpışma yok)</label>
+        </fieldset>
+        <fieldset>
+          <legend>Hava</legend>
+          <div class="grid2">
+            <label class="field"><span>Rüzgâr nereden (°)</span><input id="set-winddir" type="number" min="0" max="359" step="10"></label>
+            <label class="field"><span>Rüzgâr hızı (kt)</span><input id="set-windkt" type="number" min="0" max="60" step="1"></label>
+          </div>
+          <label class="field"><span>Türbülans</span><input id="set-turb" type="range" min="0" max="1" step="0.05"></label>
+        </fieldset>
+        <fieldset>
+          <legend>Kontroller</legend>
+          <label class="field"><span>Kontrol yöntemi</span>
+            <select id="set-control">
+              <option value="keyboard">Klavye (ok tuşları)</option>
+              <option value="mouse">Fare ile yoke (Y tuşu)</option>
+            </select></label>
+          <label class="field"><span>Hassasiyet</span><input id="set-sens" type="range" min="0.5" max="2" step="0.1"></label>
+          <label class="chk"><input type="checkbox" id="set-invert"> Yunuslama eksenini ters çevir</label>
+          <label class="chk"><input type="checkbox" id="set-autorudder"> Otomatik dümen koordinasyonu</label>
+          <p class="sub">Oyun kumandası takılınca kendiliğinden çalışır.</p>
+        </fieldset>
+        <fieldset>
+          <legend>Ses</legend>
+          <label class="chk"><input type="checkbox" id="set-sound"> Ses açık</label>
+          <label class="field"><span>Ses düzeyi</span><input id="set-volume" type="range" min="0" max="1" step="0.05"></label>
+        </fieldset>
+      </section>
+
+      <section data-panel="help" data-title="Nasıl uçulur" hidden>
+        <ol class="first-flight">
+          <li>Gazı <kbd>+</kbd> ya da <kbd>Page Up</kbd> ile sonuna kadar açın.</li>
+          <li>Hız göstergesi yeşil banda girince (eğitim uçağında 55 kt) <kbd>↓</kbd> ile burnu hafifçe kaldırın.</li>
+          <li>Havalandıktan sonra burnu ufkun biraz üstünde tutun, <kbd>←</kbd> <kbd>→</kbd> ile yatırarak dönün.</li>
+          <li>İnerken gazı azaltın, flapları <kbd>F</kbd> ile indirin, piste yaklaşınca burnu hafifçe kaldırıp yumuşakça teker koyun.</li>
+        </ol>
+        <table class="keys">
+          <caption>Uçuş</caption>
+          <tr><td><kbd>↑</kbd> <kbd>↓</kbd></td><td>Burun aşağı / yukarı</td></tr>
+          <tr><td><kbd>←</kbd> <kbd>→</kbd></td><td>Sola / sağa yatış</td></tr>
+          <tr><td><kbd>Z</kbd> <kbd>X</kbd></td><td>İstikamet dümeni ve yerde yönlendirme</td></tr>
+          <tr><td><kbd>+</kbd> <kbd>−</kbd>, <kbd>Page Up</kbd> <kbd>Page Down</kbd></td><td>Gaz</td></tr>
+          <tr><td><kbd>Home</kbd> <kbd>End</kbd>, <kbd>T</kbd> <kbd>Shift</kbd>+<kbd>T</kbd></td><td>Trim (burun aşağı / yukarı)</td></tr>
+        </table>
+        <table class="keys">
+          <caption>Sistemler</caption>
+          <tr><td><kbd>F</kbd> / <kbd>Shift</kbd>+<kbd>F</kbd></td><td>Flap indir / topla</td></tr>
+          <tr><td><kbd>G</kbd></td><td>İniş takımı</td></tr>
+          <tr><td><kbd>B</kbd> ya da <kbd>Boşluk</kbd> (basılı)</td><td>Fren</td></tr>
+          <tr><td><kbd>Shift</kbd>+<kbd>B</kbd></td><td>Park freni</td></tr>
+          <tr><td><kbd>K</kbd></td><td>Spoiler / hava freni</td></tr>
+          <tr><td><kbd>E</kbd></td><td>Motoru çalıştır / durdur</td></tr>
+          <tr><td><kbd>A</kbd></td><td>Otopilot</td></tr>
+        </table>
+        <table class="keys">
+          <caption>Görünüm ve diğer</caption>
+          <tr><td><kbd>C</kbd>, <kbd>1</kbd>–<kbd>4</kbd></td><td>Kamera</td></tr>
+          <tr><td><kbd>M</kbd></td><td>Harita</td></tr>
+          <tr><td><kbd>H</kbd> / <kbd>I</kbd></td><td>Gösterge paneli / uçuş bilgileri</td></tr>
+          <tr><td><kbd>Y</kbd></td><td>Fare ile kontrol</td></tr>
+          <tr><td><kbd>P</kbd></td><td>Duraklat</td></tr>
+          <tr><td><kbd>R</kbd></td><td>Yeniden başla</td></tr>
+          <tr><td><kbd>F1</kbd> / <kbd>?</kbd></td><td>Bu yardım</td></tr>
+        </table>
+        <p class="sub">Gerçekçi mod (Ayarlar): motoru <kbd>E</kbd> ile çalıştırın, park frenini <kbd>Shift</kbd>+<kbd>B</kbd> ile bırakın, kalkışta pervane torkunu <kbd>X</kbd> ile biraz sağ dümen vererek dengeleyin. Durum sütunundaki YAKIT satırını takip edin.</p>
+        <p class="sub">Oyun kumandası: sol çubuk yunuslama ve yatış, sağ çubuk dümen, RT/LT gaz, A fren, Y iniş takımı, B/X flap, LB kamera, RB otopilot.</p>
+      </section>
+    </div>
+  </aside>
+
+  <div id="bottom">
+    <canvas id="panel" aria-label="Gösterge paneli"></canvas>
+    <nav id="toolbar" aria-label="Menü">
+      <button data-open="aircraft" aria-pressed="false"><svg viewBox="-12 -12 24 24"><path d="M0,-10 L2,-3 L9,1 L9,3 L2,1.5 L1.5,7 L4,9 L4,10 L-4,10 L-4,9 L-1.5,7 L-2,1.5 L-9,3 L-9,1 L-2,-3 Z"/></svg><span>Uçak</span></button>
+      <button data-open="location" aria-pressed="false"><svg viewBox="0 0 24 24"><path d="M12 22s7-7.1 7-12.5A7 7 0 0 0 5 9.5C5 14.9 12 22 12 22z"/><circle cx="12" cy="9.5" r="2.6"/></svg><span>Konum</span></button>
+      <button data-open="camera" aria-pressed="false"><svg viewBox="0 0 24 24"><path d="M4 7h3l2-2.5h6L17 7h3v12H4z"/><circle cx="12" cy="13" r="3.6"/></svg><span>Kamera</span></button>
+      <button id="tb-map"><svg viewBox="0 0 24 24"><path d="M3 6l6-2 6 2 6-2v14l-6 2-6-2-6 2z"/><path d="M9 4v14M15 6v14"/></svg><span>Harita</span></button>
+      <button data-open="autopilot" aria-pressed="false"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 12l4.5-4.5M12 3.5v2M20.5 12h-2M3.5 12h2"/></svg><span>Otopilot</span></button>
+      <button data-open="settings" aria-pressed="false"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.3 5.3l2.1 2.1M16.6 16.6l2.1 2.1M5.3 18.7l2.1-2.1M16.6 7.4l2.1-2.1"/></svg><span>Ayarlar</span></button>
+      <button data-open="help" aria-pressed="false"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.5 9.3a2.6 2.6 0 1 1 3.6 2.4c-.8.4-1.1.9-1.1 1.8v.6"/><circle cx="12" cy="17" r=".6"/></svg><span>Yardım</span></button>
+      <button id="tb-pause" aria-pressed="false"><svg viewBox="0 0 24 24"><path d="M8 5v14M16 5v14"/></svg><span>Duraklat</span></button>
+    </nav>
+  </div>
+
+  <div id="touch" hidden>
+    <div class="stick" aria-label="Kontrol çubuğu"><div class="knob"></div></div>
+    <div class="thr" aria-label="Gaz kolu"><div class="thr-knob"></div><span>Gaz</span></div>
+    <div class="tbtns">
+      <button data-act="brakes">Fren</button>
+      <button data-act="flapsDown">Flap +</button>
+      <button data-act="flapsUp">Flap −</button>
+      <button data-act="gear">Teker</button>
+      <button data-act="camera">Kamera</button>
+    </div>
+  </div>
+
+  <div id="overlay-crash" class="overlay" hidden>
+    <div class="card">
+      <h2>Uçak düştü</h2>
+      <p id="crash-reason"></p>
+      <div class="row">
+        <button class="btn primary" id="crash-reset">Yeniden başla <kbd>R</kbd></button>
+        <button class="btn" id="crash-loc">Başka konum seç</button>
+      </div>
+    </div>
+  </div>
+  <div id="overlay-pause" class="overlay soft" hidden>
+    <div class="card">
+      <h2>Duraklatıldı</h2>
+      <button class="btn primary" id="pause-resume">Devam et <kbd>P</kbd></button>
+    </div>
+  </div>
+  <div id="loading" class="overlay load">
+    <div class="load-inner">
+      <h1>GökSim</h1>
+      <p id="loading-text">Yükleniyor…</p>
+      <div class="bar"><i></i></div>
+    </div>
+  </div>
+  <div id="credits"></div>
+
+  <script>window.CESIUM_BASE_URL = 'https://cdn.jsdelivr.net/npm/cesium@1.145.0/Build/Cesium/';</script>
+  <script src="https://cdn.jsdelivr.net/npm/cesium@1.145.0/Build/Cesium/Cesium.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="data/airports.js"></script>
+  <script src="js/math.js"></script>
+  <script src="js/aircraft.js"></script>
+  <script src="js/physics.js"></script>
+  <script src="js/autopilot.js"></script>
+  <script src="js/models.js"></script>
+  <script src="js/instruments.js"></script>
+  <script src="js/audio.js"></script>
+  <script src="js/controls.js"></script>
+  <script src="js/camera.js"></script>
+  <script src="js/ui.js"></script>
+  <script src="js/main.js"></script>
+</body>
+</html>
