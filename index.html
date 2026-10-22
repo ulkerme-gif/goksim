@@ -1896,6 +1896,8 @@ window.GS_AIRPORTS=[["AGGH","HIR","Honiara International Airport","Honiara","SB"
     navGreen: { c: [0.1, 1, 0.2, 1], m: 0, r: 0.5, e: [0.05, 1, 0.15] },
     navWhite: { c: [1, 1, 1, 1], m: 0, r: 0.5, e: [1, 1, 1] },
     flame: { c: [1, 0.55, 0.2, 0.75], m: 0, r: 1, e: [1, 0.5, 0.15], blend: true },
+    disc: { c: [0.12, 0.12, 0.13, 0.22], m: 0, r: 0.8, blend: true },
+    strobe: { c: [1, 1, 1, 1], m: 0, r: 0.3, e: [1, 1, 1] },
   };
 
   // ---------- geometri yardımcıları ----------
@@ -1919,12 +1921,13 @@ window.GS_AIRPORTS=[["AGGH","HIR","Honiara International Airport","Honiara","SB"
   class Builder {
     constructor() {
       this.nodes = [];
+      this.meta = {};
       this.node('fuselage');
     }
-    node(name, pivot) {
+    node(name, pivot, parent) {
       let n = this.nodes.find((x) => x.name === name);
       if (!n) {
-        n = { name, pivot: pivot || [0, 0, 0], groups: new Map() };
+        n = { name, pivot: pivot || [0, 0, 0], parent: parent || null, groups: new Map() };
         this.nodes.push(n);
       } else if (pivot) n.pivot = pivot;
       this.cur = n;
@@ -2076,8 +2079,17 @@ window.GS_AIRPORTS=[["AGGH","HIR","Honiara International Airport","Honiara","SB"
       else this.hull(mat, rings, caps);
     }
     wheel(c, r, w, mat = 'tire', hub = 'lgray') {
-      this.cyl(mat, [c[0] - w / 2, c[1], c[2]], [c[0] + w / 2, c[1], c[2]], r, r, 14, true, true);
-      this.cyl(hub, [c[0] - w / 2 - 0.005, c[1], c[2]], [c[0] + w / 2 + 0.005, c[1], c[2]], r * 0.5, r * 0.5, 10, true, true);
+      this.cyl(mat, [c[0] - w / 2, c[1], c[2]], [c[0] + w / 2, c[1], c[2]], r, r, 16, true, true);
+      this.cyl(hub, [c[0] - w / 2 - 0.005, c[1], c[2]], [c[0] + w / 2 + 0.005, c[1], c[2]], r * 0.55, r * 0.55, 12, true, true);
+      // jant cıvataları: tekerleğin döndüğü görünsün
+      for (const sx of [-1, 1]) {
+        const x0 = c[0] + sx * (w / 2 + 0.006);
+        for (let k = 0; k < 4; k++) {
+          const a = (k / 4) * Math.PI * 2;
+          const yy = c[1] + Math.cos(a) * r * 0.33, zz = c[2] + Math.sin(a) * r * 0.33, q = r * 0.07;
+          this.box('dgray', [Math.min(x0, x0 + sx * 0.012), yy - q, zz - q], [Math.max(x0, x0 + sx * 0.012), yy + q, zz + q]);
+        }
+      }
     }
     // ince plaka (cam vb.)
     slab(mat, quad, thick, outward) {
@@ -2140,15 +2152,22 @@ window.GS_AIRPORTS=[["AGGH","HIR","Honiara International Airport","Honiara","SB"
         mb.panel(mat, { p: A.p, c: A.c - cA, t: A.t }, { p: B.p, c: B.c - cB, t: B.t }, vertical);
         const hA = [A.p[0], A.p[1] - (A.c - cA), A.p[2]];
         const hB = [B.p[0], B.p[1] - (B.c - cB), B.p[2]];
-        const name = sf.shared ? sf.node : sf.node + (side > 0 ? 'R' : 'L');
+        const name = sf.shared && vertical ? sf.node : sf.node + (side > 0 ? 'R' : 'L');
         // menteşe merkezi pivot
         const full0 = secAt(st, sf.s0, vertical), full1 = secAt(st, sf.s1, vertical);
         let pv0 = [full0.p[0], full0.p[1] - full0.c * (1 - sf.frac), full0.p[2]];
         let pv1 = [full1.p[0], full1.p[1] - full1.c * (1 - sf.frac), full1.p[2]];
         if (side < 0) { pv0 = [-pv0[0], pv0[1], pv0[2]]; pv1 = [-pv1[0], pv1[1], pv1[2]]; }
-        let pivot = V.scale(V.add(pv0, pv1), 0.5);
-        if (sf.shared && !vertical) pivot = [0, pivot[1], pivot[2]];
-        mb.node(name, mb.nodes.find((n) => n.name === name) ? undefined : pivot);
+        const pivot = V.scale(V.add(pv0, pv1), 0.5);
+        const isNew = !mb.nodes.find((n) => n.name === name);
+        mb.node(name, isNew ? pivot : undefined);
+        if (isNew) {
+          // menteşe ekseni: yüzeyin gerçek menteşe çizgisi (ok açısı dahil)
+          let ax = V.norm(V.sub(pv1, pv0));
+          if (vertical ? ax[2] < 0 : ax[0] < 0) ax = V.scale(ax, -1);
+          const cs = ((full0.c + full1.c) / 2) * sf.frac;
+          mb.meta[name] = { axis: ax, fowler: sf.fowler ? [0, -cs * sf.fowler, -cs * sf.fowler * 0.3] : null };
+        }
         mb.panel(sf.mat || o.mat, { p: hA, c: cA, t: A.t * (1 - sf.frac * 0.6) }, { p: hB, c: cB, t: B.t * (1 - sf.frac * 0.6) }, vertical);
       }
     }
@@ -2158,6 +2177,9 @@ window.GS_AIRPORTS=[["AGGH","HIR","Honiara International Airport","Honiara","SB"
   function propeller(mb, hub, R, blades, spinnerR, spinnerL, mat = 'prop') {
     mb.node('prop', hub);
     mb.cyl('white', [hub[0], hub[1] - 0.05, hub[2]], [hub[0], hub[1] + spinnerL, hub[2]], spinnerR, 0.015, 14, true, true);
+    mb.node('propDisc', hub, 'prop');
+    mb.cyl('disc', [hub[0], hub[1] - 0.004, hub[2]], [hub[0], hub[1] + 0.004, hub[2]], R, R, 32, true, true);
+    mb.node('blades', hub, 'prop');
     for (let b = 0; b < blades; b++) {
       const ang = (b / blades) * Math.PI * 2;
       const dir = [Math.sin(ang), 0, Math.cos(ang)];
@@ -2175,10 +2197,28 @@ window.GS_AIRPORTS=[["AGGH","HIR","Honiara International Airport","Honiara","SB"
     }
   }
 
-  // iniş takımı düğümleri: pivot = temas noktası
-  function gearNode(mb, i, gp, build) {
-    mb.node('gear' + i, gp.pos.slice());
-    build(gp.pos);
+  // iniş takımı: gearLeg (menteşe, katlanma) > gear (temas noktası: amortisör + direksiyon) > wheel (dönen teker)
+  function gearUnit(mb, i, gp, o) {
+    const leg = 'gearLeg' + i;
+    mb.node(leg, o.hinge);
+    mb.meta[leg] = { retractAxis: o.axis || null, retractAngle: o.angle || 0 };
+    if (o.legBuild) o.legBuild();
+    mb.node('gear' + i, gp.pos.slice(), leg);
+    if (o.build) o.build();
+    (o.wheels || []).forEach((w, k) => {
+      const nm = `wheel${i}_${k}`;
+      mb.node(nm, w.c, 'gear' + i);
+      mb.meta[nm] = { r: w.r };
+      mb.wheel(w.c, w.r, w.w);
+    });
+    mb.node('airframe');
+  }
+  function lights(mb, strobes, beacons) {
+    mb.node('strobe');
+    for (const p of strobes) mb.box('strobe', [p[0] - 0.04, p[1] - 0.05, p[2] - 0.04], [p[0] + 0.04, p[1] + 0.05, p[2] + 0.04]);
+    mb.node('beacon');
+    for (const p of beacons) mb.box('navRed', [p[0] - 0.08, p[1] - 0.08, p[2] - 0.05], [p[0] + 0.08, p[1] + 0.08, p[2] + 0.05]);
+    mb.node('airframe');
   }
 
   // ---------------- MODELLER ----------------
@@ -2219,7 +2259,7 @@ window.GS_AIRPORTS=[["AGGH","HIR","Honiara International Airport","Honiara","SB"
         { p: [5.5, 0.75, 1.01], c: 1.08, t: 0.11 },
       ],
       surfaces: [
-        { node: 'flap', s0: 0.6, s1: 2.6, frac: 0.24 },
+        { node: 'flap', s0: 0.6, s1: 2.6, frac: 0.24, fowler: 0.35 },
         { node: 'aileron', s0: 2.7, s1: 5.3, frac: 0.26 },
       ],
       tipFrom: 5.3,
@@ -2255,28 +2295,38 @@ window.GS_AIRPORTS=[["AGGH","HIR","Honiara International Airport","Honiara","SB"
     mb.box('navWhite', [-0.03, -5.62, 0.33], [0.03, -5.55, 0.39]);
     // pervane
     propeller(mb, [0, 2.66, -0.12], 0.86, 2, 0.17, 0.32);
+    lights(mb, [[-5.53, 0.42, 1.0], [5.53, 0.42, 1.0]], [[0, -5.3, 1.6]]);
     // iniş takımı
     const gp = def.gear.points;
-    gearNode(mb, 0, gp[0], (p) => {
-      const c = [p[0], p[1], p[2] + 0.19];
-      mb.wheel(c, 0.19, 0.12);
-      mb.cyl('metal', [c[0], c[1] + 0.05, c[2] + 0.05], [0, 1.32, -0.38], 0.035, 0.035, 8, true);
-      mb.box('lgray', [c[0] - 0.09, c[1] - 0.05, c[2] + 0.02], [c[0] + 0.09, c[1] + 0.08, c[2] + 0.22]);
-    });
+    {
+      const p = gp[0].pos, c = [p[0], p[1], p[2] + 0.19];
+      gearUnit(mb, 0, gp[0], {
+        hinge: [0, 1.32, -0.38],
+        build: () => {
+          mb.cyl('metal', [c[0], c[1] + 0.03, c[2] + 0.12], [0, 1.32, -0.38], 0.035, 0.035, 8, true);
+          mb.box('lgray', [c[0] - 0.09, c[1] - 0.05, c[2] + 0.1], [c[0] - 0.07, c[1] + 0.08, c[2] + 0.24]);
+          mb.box('lgray', [c[0] + 0.07, c[1] - 0.05, c[2] + 0.1], [c[0] + 0.09, c[1] + 0.08, c[2] + 0.24]);
+          mb.box('lgray', [c[0] - 0.09, c[1] - 0.05, c[2] + 0.22], [c[0] + 0.09, c[1] + 0.08, c[2] + 0.26]);
+        },
+        wheels: [{ c, r: 0.19, w: 0.12 }],
+      });
+    }
     for (const i of [1, 2]) {
-      gearNode(mb, i, gp[i], (p) => {
-        const sx = Math.sign(p[0]);
-        const c = [p[0], p[1], p[2] + 0.21];
-        mb.wheel(c, 0.21, 0.14);
-        mb.cyl('white', [c[0] - 0.06 * sx, c[1], c[2] + 0.1], [0.42 * sx, -0.35, -0.5], 0.045, 0.04, 8, true);
-        const pc = [p[0], p[1], p[2] + 0.26];
-        mb.loft('white', [
-          [p[1] + 0.42, 0.02, 0.02],
-          [p[1] + 0.25, 0.1, 0.17],
-          [p[1] + 0.02, 0.11, 0.2],
-          [p[1] - 0.22, 0.09, 0.16],
-          [p[1] - 0.4, 0.02, 0.03],
-        ].map(([y, w, h]) => ring([y, pc[2], w, h, 2.2], 12, pc[0])));
+      const p = gp[i].pos, sx = Math.sign(p[0]), c = [p[0], p[1], p[2] + 0.21];
+      gearUnit(mb, i, gp[i], {
+        hinge: [0.42 * sx, -0.35, -0.5],
+        build: () => {
+          mb.cyl('white', [c[0] - 0.06 * sx, c[1], c[2] + 0.1], [0.42 * sx, -0.35, -0.5], 0.045, 0.04, 8, true);
+          const pc = [p[0], p[1], p[2] + 0.29];
+          mb.loft('white', [
+            [p[1] + 0.42, 0.02, 0.02],
+            [p[1] + 0.25, 0.1, 0.15],
+            [p[1] + 0.02, 0.11, 0.17],
+            [p[1] - 0.22, 0.09, 0.14],
+            [p[1] - 0.4, 0.02, 0.03],
+          ].map(([y, w, h]) => ring([y, pc[2], w, h, 2.2], 12, pc[0])));
+        },
+        wheels: [{ c, r: 0.21, w: 0.14 }],
       });
     }
   };
@@ -2335,19 +2385,24 @@ window.GS_AIRPORTS=[["AGGH","HIR","Honiara International Airport","Honiara","SB"
     propeller(mb, [0, 2.0, 0.05], 0.9, 2, 0.12, 0.22);
     const gp = def.gear.points;
     for (const i of [0, 1]) {
-      gearNode(mb, i, gp[i], (p) => {
-        const sx = Math.sign(p[0]);
-        const c = [p[0], p[1], p[2] + 0.22];
-        mb.wheel(c, 0.22, 0.12);
-        mb.cyl('cream', [c[0] - 0.05 * sx, c[1] + 0.02, c[2]], [0.25 * sx, 0.6, -0.42], 0.03, 0.03, 6, true);
-        mb.cyl('cream', [c[0] - 0.05 * sx, c[1] - 0.02, c[2]], [0.25 * sx, 0.0, -0.42], 0.03, 0.03, 6, true);
+      const p = gp[i].pos, sx = Math.sign(p[0]), c = [p[0], p[1], p[2] + 0.22];
+      gearUnit(mb, i, gp[i], {
+        hinge: [0.25 * sx, 0.3, -0.42],
+        build: () => {
+          mb.cyl('cream', [c[0] - 0.05 * sx, c[1] + 0.02, c[2]], [0.25 * sx, 0.6, -0.42], 0.03, 0.03, 6, true);
+          mb.cyl('cream', [c[0] - 0.05 * sx, c[1] - 0.02, c[2]], [0.25 * sx, 0.0, -0.42], 0.03, 0.03, 6, true);
+        },
+        wheels: [{ c, r: 0.22, w: 0.12 }],
       });
     }
-    gearNode(mb, 2, gp[2], (p) => {
-      const c = [p[0], p[1], p[2] + 0.08];
-      mb.wheel(c, 0.08, 0.05);
-      mb.cyl('dgray', [c[0], c[1] + 0.02, c[2] + 0.02], [0, -4.25, 0.12], 0.02, 0.02, 6, true);
-    });
+    {
+      const p = gp[2].pos, c = [p[0], p[1], p[2] + 0.08];
+      gearUnit(mb, 2, gp[2], {
+        hinge: [0, -4.25, 0.12],
+        build: () => mb.cyl('dgray', [c[0], c[1] + 0.02, c[2] + 0.02], [0, -4.25, 0.12], 0.02, 0.02, 6, true),
+        wheels: [{ c, r: 0.08, w: 0.05 }],
+      });
+    }
   };
 
   BUILD.airliner = function (mb, def) {
@@ -2399,7 +2454,7 @@ window.GS_AIRPORTS=[["AGGH","HIR","Honiara International Airport","Honiara","SB"
       mat: 'lgray',
       stations: wst,
       surfaces: [
-        { node: 'flap', s0: 2.1, s1: 12.0, frac: 0.24 },
+        { node: 'flap', s0: 2.1, s1: 12.0, frac: 0.24, fowler: 0.55 },
         { node: 'aileron', s0: 12.4, s1: 16.6, frac: 0.24 },
       ],
     });
@@ -2409,6 +2464,11 @@ window.GS_AIRPORTS=[["AGGH","HIR","Honiara International Airport","Honiara","SB"
       const pa = [side * a.p[0], a.p[1] - a.c * 0.56, a.p[2] + a.t * 0.3];
       const pb = [side * b.p[0], b.p[1] - b.c * 0.56, b.p[2] + b.t * 0.3];
       mb.node('spoiler' + (side > 0 ? 'R' : 'L'), V.scale(V.add(pa, pb), 0.5));
+      {
+        let ax = V.norm(V.sub(pb, pa));
+        if (ax[0] < 0) ax = V.scale(ax, -1);
+        mb.meta['spoiler' + (side > 0 ? 'R' : 'L')] = { axis: ax };
+      }
       mb.panel('lgray', { p: pa, c: a.c * 0.18, t: 0.05 }, { p: pb, c: b.c * 0.18, t: 0.04 });
     }
     mb.node('airframe');
@@ -2452,20 +2512,47 @@ window.GS_AIRPORTS=[["AGGH","HIR","Honiara International Airport","Honiara","SB"
     mb.box('navRed', [-17.42, -3.9, 1.85], [-17.3, -3.7, 1.95]);
     mb.box('navGreen', [17.3, -3.9, 1.85], [17.42, -3.7, 1.95]);
     mb.box('navWhite', [-0.06, -19.45, 1.4], [0.06, -19.35, 1.5]);
+    lights(mb, [[-17.42, -3.95, 1.98], [17.42, -3.95, 1.98], [0, -19.46, 1.45]], [[0, 1.0, 2.07], [0, -2.0, -2.07]]);
+    // burun teker kapakları (teker inince açılır)
+    for (const sx of [1, -1]) {
+      const nm = sx > 0 ? 'doorNR' : 'doorNL';
+      mb.node(nm, [0.42 * sx, 11.0, -2.03]);
+      mb.meta[nm] = { axis: [0, 1, 0], openAngle: sx > 0 ? -1.5 : 1.5 };
+      mb.box('white', [sx > 0 ? 0.02 : -0.42, 10.0, -2.07], [sx > 0 ? 0.42 : -0.02, 12.0, -2.03]);
+    }
+    mb.node('airframe');
     const gp = def.gear.points;
-    gearNode(mb, 0, gp[0], (p) => {
-      const c = [p[0], p[1], p[2] + 0.38];
-      mb.wheel([c[0] - 0.27, c[1], c[2]], 0.38, 0.24);
-      mb.wheel([c[0] + 0.27, c[1], c[2]], 0.38, 0.24);
-      mb.cyl('lgray', [c[0], c[1], c[2]], [0, 10.85, -1.7], 0.11, 0.11, 10, true);
-    });
+    {
+      const p = gp[0].pos, c = [p[0], p[1], p[2] + 0.38];
+      gearUnit(mb, 0, gp[0], {
+        hinge: [0, 10.85, -1.7],
+        axis: [1, 0, 0],
+        angle: Math.PI / 2,
+        build: () => {
+          mb.cyl('lgray', [c[0], c[1], c[2]], [0, 10.85, -1.7], 0.11, 0.11, 10, true);
+          mb.cyl('dgray', [c[0] - 0.3, c[1], c[2]], [c[0] + 0.3, c[1], c[2]], 0.06, 0.06, 8, true);
+          mb.cyl('dgray', [0, 11.25, -2.4], [0, 10.9, -1.9], 0.04, 0.04, 6, true);
+        },
+        wheels: [{ c: [c[0] - 0.27, c[1], c[2]], r: 0.38, w: 0.24 }, { c: [c[0] + 0.27, c[1], c[2]], r: 0.38, w: 0.24 }],
+      });
+    }
     for (const i of [1, 2]) {
-      gearNode(mb, i, gp[i], (p) => {
-        const c = [p[0], p[1], p[2] + 0.58];
-        mb.wheel([c[0] - 0.33, c[1], c[2]], 0.58, 0.34);
-        mb.wheel([c[0] + 0.33, c[1], c[2]], 0.58, 0.34);
-        mb.cyl('lgray', [c[0], c[1], c[2]], [c[0], -1.25, -1.25], 0.16, 0.16, 10, true);
-        mb.cyl('dgray', [c[0] - 0.33, c[1], c[2]], [c[0] + 0.33, c[1], c[2]], 0.08, 0.08, 8, true);
+      const p = gp[i].pos, sx = Math.sign(p[0]), c = [p[0], p[1], p[2] + 0.58];
+      gearUnit(mb, i, gp[i], {
+        hinge: [3.8 * sx, -1.25, -1.25],
+        axis: [0, 1, 0],
+        angle: sx * Math.PI / 2,
+        legBuild: () => {
+          // bacağa bağlı kapak (toplanınca kanat altını kapatır)
+          mb.box('white', [Math.min(sx * 4.08, sx * 4.12), -1.85, -2.45], [Math.max(sx * 4.08, sx * 4.12), -0.65, -1.3]);
+        },
+        build: () => {
+          mb.cyl('lgray', [c[0], c[1], c[2]], [c[0], -1.25, -1.25], 0.16, 0.16, 10, true);
+          mb.cyl('metal', [c[0], c[1], c[2] + 0.25], [c[0], c[1], c[2] + 0.9], 0.11, 0.11, 10, false);
+          mb.cyl('dgray', [c[0] - 0.33, c[1], c[2]], [c[0] + 0.33, c[1], c[2]], 0.08, 0.08, 8, true);
+          mb.cyl('dgray', [c[0], c[1] - 0.6, c[2] + 0.9], [c[0], c[1] - 0.05, c[2] + 0.2], 0.045, 0.045, 6, true);
+        },
+        wheels: [{ c: [c[0] - 0.33, c[1], c[2]], r: 0.58, w: 0.34 }, { c: [c[0] + 0.33, c[1], c[2]], r: 0.58, w: 0.34 }],
       });
     }
   };
@@ -2521,6 +2608,7 @@ window.GS_AIRPORTS=[["AGGH","HIR","Honiara International Airport","Honiara","SB"
     }
     // tamamı hareketli yatay kuyruk
     mb.node('elevator', [0, -5.2, -0.12]);
+    mb.meta.elevator = { axis: [1, 0, 0] };
     for (const sx of [1, -1]) mb.panel('gray', { p: [0.65 * sx, -4.4, -0.12], c: 2.5, t: 0.1 }, { p: [3.0 * sx, -5.9, -0.2], c: 0.9, t: 0.05 });
     mb.node('airframe');
     wing(mb, {
@@ -2539,17 +2627,28 @@ window.GS_AIRPORTS=[["AGGH","HIR","Honiara International Airport","Honiara","SB"
     mb.node('flame', [0, -7.5, 0.05]);
     mb.cyl('flame', [0, -7.45, 0.05], [0, -10.3, 0.05], 0.42, 0.04, 16, true);
     const gp = def.gear.points;
-    gearNode(mb, 0, gp[0], (p) => {
-      const c = [p[0], p[1], p[2] + 0.28];
-      mb.wheel(c, 0.28, 0.16);
-      mb.cyl('lgray', c, [0, 4.0, -0.85], 0.06, 0.06, 8, true);
-    });
+    {
+      const p = gp[0].pos, c = [p[0], p[1], p[2] + 0.28];
+      gearUnit(mb, 0, gp[0], {
+        hinge: [0, 4.0, -0.85],
+        axis: [1, 0, 0],
+        angle: -Math.PI / 2,
+        build: () => {
+          mb.cyl('lgray', c, [0, 4.0, -0.85], 0.06, 0.06, 8, true);
+          mb.box('lgray', [c[0] - 0.11, c[1] - 0.04, c[2] - 0.02], [c[0] - 0.09, c[1] + 0.04, c[2] + 0.3]);
+          mb.box('lgray', [c[0] + 0.09, c[1] - 0.04, c[2] - 0.02], [c[0] + 0.11, c[1] + 0.04, c[2] + 0.3]);
+        },
+        wheels: [{ c, r: 0.28, w: 0.16 }],
+      });
+    }
     for (const i of [1, 2]) {
-      gearNode(mb, i, gp[i], (p) => {
-        const sx = Math.sign(p[0]);
-        const c = [p[0], p[1], p[2] + 0.36];
-        mb.wheel(c, 0.36, 0.2);
-        mb.cyl('lgray', [c[0] - 0.08 * sx, c[1], c[2]], [0.8 * sx, -0.3, -0.8], 0.07, 0.07, 8, true);
+      const p = gp[i].pos, sx = Math.sign(p[0]), c = [p[0], p[1], p[2] + 0.36];
+      gearUnit(mb, i, gp[i], {
+        hinge: [0.8 * sx, -0.3, -0.8],
+        axis: [1, 0, 0],
+        angle: 1.6,
+        build: () => mb.cyl('lgray', [c[0] - 0.08 * sx, c[1], c[2]], [0.8 * sx, -0.3, -0.8], 0.07, 0.07, 8, true),
+        wheels: [{ c, r: 0.36, w: 0.2 }],
       });
     }
   };
@@ -2593,6 +2692,11 @@ window.GS_AIRPORTS=[["AGGH","HIR","Honiara International Airport","Honiara","SB"
       const pa = [side * a.p[0], a.p[1] - a.c * 0.45, a.p[2] + a.t * 0.4];
       const pb = [side * b.p[0], b.p[1] - b.c * 0.45, b.p[2] + b.t * 0.4];
       mb.node('spoiler' + (side > 0 ? 'R' : 'L'), V.scale(V.add(pa, pb), 0.5));
+      {
+        let ax = V.norm(V.sub(pb, pa));
+        if (ax[0] < 0) ax = V.scale(ax, -1);
+        mb.meta['spoiler' + (side > 0 ? 'R' : 'L')] = { axis: ax };
+      }
       mb.panel('lgray', { p: pa, c: 0.16, t: 0.02 }, { p: pb, c: 0.15, t: 0.02 });
     }
     wing(mb, {
@@ -2613,8 +2717,8 @@ window.GS_AIRPORTS=[["AGGH","HIR","Honiara International Airport","Honiara","SB"
       surfaces: [{ node: 'elevator', s0: 0, s1: 1.6, frac: 0.38, shared: true }],
     });
     const gp = def.gear.points;
-    gearNode(mb, 0, gp[0], (p) => mb.wheel([p[0], p[1], p[2] + 0.13], 0.13, 0.08));
-    gearNode(mb, 1, gp[1], (p) => mb.wheel([p[0], p[1], p[2] + 0.2], 0.2, 0.1));
+    gearUnit(mb, 0, gp[0], { hinge: [0, 1.9, -0.45], wheels: [{ c: [gp[0].pos[0], gp[0].pos[1], gp[0].pos[2] + 0.13], r: 0.13, w: 0.08 }] });
+    gearUnit(mb, 1, gp[1], { hinge: [0, -0.1, -0.4], wheels: [{ c: [gp[1].pos[0], gp[1].pos[1], gp[1].pos[2] + 0.2], r: 0.2, w: 0.1 }] });
     mb.node('airframe');
     mb.box('dgray', [-0.03, -4.45, -0.12], [0.03, -4.3, 0.05]);
   };
@@ -2674,15 +2778,32 @@ window.GS_AIRPORTS=[["AGGH","HIR","Honiara International Airport","Honiara","SB"
         const aI = accessors.length - 1;
         prims.push({ attributes: { POSITION: aP, NORMAL: aN }, indices: aI, material: matIndex(mat), mode: 4 });
       }
-      const node = { name: nd.name, translation: toG(nd.pivot) };
+      const par = nd.parent ? mb.nodes.find((x) => x.name === nd.parent) : null;
+      const pp = par ? par.pivot : [0, 0, 0];
+      const local = toG([nd.pivot[0] - pp[0], nd.pivot[1] - pp[1], nd.pivot[2] - pp[2]]);
+      const node = { name: nd.name, translation: local };
       if (prims.length) {
         meshes.push({ name: nd.name, primitives: prims });
         node.mesh = meshes.length - 1;
       }
       nodes.push(node);
-      rootChildren.push(nodes.length - 1);
-      info[nd.name] = { pivotG: toG(nd.pivot), pivot: nd.pivot.slice() };
+      const meta = mb.meta[nd.name] || {};
+      info[nd.name] = {
+        pivotG: local,
+        axisG: meta.axis ? toG(meta.axis) : null,
+        retractAxisG: meta.retractAxis ? toG(meta.retractAxis) : null,
+        retractAngle: meta.retractAngle || 0,
+        fowlerG: meta.fowler ? toG(meta.fowler) : null,
+        openAngle: meta.openAngle || 0,
+        r: meta.r || 0,
+      };
     }
+    mb.nodes.forEach((nd, i) => {
+      if (nd.parent) {
+        const pi = mb.nodes.findIndex((x) => x.name === nd.parent);
+        (nodes[pi].children = nodes[pi].children || []).push(i);
+      } else rootChildren.push(i);
+    });
     nodes.push({ name: 'root', children: rootChildren });
     const materials = matNames.map((n) => {
       const m = MATS[n] || MATS.white;
@@ -4851,11 +4972,16 @@ window.GS_AIRPORTS=[["AGGH","HIR","Honiara International Airport","Honiara","SB"
       this.model = model;
       model.readyEvent.addEventListener(() => {
         if (token !== this.modelToken) return;
+        const C3 = Cesium.Cartesian3;
+        const vec = (a) => (a ? new C3(a[0], a[1], a[2]) : null);
         const nodes = {};
         for (const name of Object.keys(res.nodes)) {
           const n = model.getNode(name);
-          if (n) nodes[name] = { node: n, pivotG: res.nodes[name].pivotG, shown: true };
+          const inf = res.nodes[name];
+          if (n) nodes[name] = { node: n, pivotG: inf.pivotG, axisC: vec(inf.axisG), retractC: vec(inf.retractAxisG), retractAngle: inf.retractAngle, fowlerG: inf.fowlerG, openAngle: inf.openAngle, r: inf.r, shown: true };
         }
+        this.wheelRoll = [];
+        this.wheelSpd = [];
         this.nodes = nodes;
       });
     }
@@ -4880,21 +5006,29 @@ window.GS_AIRPORTS=[["AGGH","HIR","Honiara International Airport","Honiara","SB"
       const fm = this.fm, def = this.def;
       const C3 = Cesium.Cartesian3, CQ = Cesium.Quaternion, M4 = Cesium.Matrix4;
       if (!this._ax) {
+        // glTF eksenleri: gövde x -> x, gövde z (yukarı) -> y, gövde y (ileri) -> -z
         this._ax = { x: new C3(1, 0, 0), z: new C3(0, 1, 0), y: new C3(0, 0, -1) };
         this._t = new C3();
         this._q = new CQ();
         this._s = new C3(1, 1, 1);
         this._m = new M4();
       }
-      const set = (name, axis, ang, upOff = 0) => {
+      const set = (name, axis, ang, off) => {
         const n = N[name];
         if (!n) return;
         const p = n.pivotG;
-        this._t.x = p[0];
-        this._t.y = p[1] + upOff;
-        this._t.z = p[2];
-        CQ.fromAxisAngle(this._ax[axis], ang, this._q);
+        this._t.x = p[0] + (off ? off[0] : 0);
+        this._t.y = p[1] + (off ? off[1] : 0);
+        this._t.z = p[2] + (off ? off[2] : 0);
+        CQ.fromAxisAngle(axis, ang, this._q);
         n.node.matrix = M4.fromTranslationQuaternionRotationScale(this._t, this._q, this._s, this._m);
+      };
+      // kumanda yüzeyleri gerçek menteşe ekseni etrafında döner; flaplar geriye kayar (Fowler)
+      const ctl = (name, defAx, ang, slide) => {
+        const n = N[name];
+        if (!n) return;
+        const f = n.fowlerG && slide ? [n.fowlerG[0] * slide, n.fowlerG[1] * slide, n.fowlerG[2] * slide] : null;
+        set(name, n.axisC || this._ax[defAx], ang, f);
       };
       const show = (name, on) => {
         const n = N[name];
@@ -4903,34 +5037,59 @@ window.GS_AIRPORTS=[["AGGH","HIR","Honiara International Airport","Honiara","SB"
           n.shown = on;
         }
       };
-      set('elevator', 'x', -(fm.elev + fm.trim * def.ctrl.trim * 0.5) * 0.32);
-      set('rudder', 'z', fm.rud * 0.4);
-      set('aileronR', 'x', -fm.ail * 0.35);
-      set('aileronL', 'x', fm.ail * 0.35);
-      set('flapR', 'x', fm.flaps * 0.62);
-      set('flapL', 'x', fm.flaps * 0.62);
+      const e = -(fm.elev + fm.trim * def.ctrl.trim * 0.5) * 0.32;
+      ctl('elevator', 'x', e);
+      ctl('elevatorR', 'x', e);
+      ctl('elevatorL', 'x', e);
+      ctl('rudder', 'z', fm.rud * 0.4);
+      const droop = N.flapR ? 0 : fm.flaps * 0.3; // flap yoksa kanatçıklar flaperon gibi iner
+      ctl('aileronR', 'x', -fm.ail * 0.35 + droop);
+      ctl('aileronL', 'x', fm.ail * 0.35 + droop);
+      ctl('flapR', 'x', fm.flaps * 0.6, fm.flaps);
+      ctl('flapL', 'x', fm.flaps * 0.6, fm.flaps);
       const sp = def.engine.type === 'winch' ? 1.45 : 0.85;
-      set('spoilerR', 'x', -fm.spoiler * sp);
-      set('spoilerL', 'x', -fm.spoiler * sp);
-      if (N.prop) {
-        const rps = fm.engineOn ? fm.rpm / 60 : fm.tas * 0.12;
-        this.propAng = (this.propAng + Math.min(rps, 9.3) * Math.PI * 2 * dt) % (Math.PI * 2);
-        set('prop', 'y', this.propAng);
-      }
+      ctl('spoilerR', 'x', -fm.spoiler * sp);
+      ctl('spoilerL', 'x', -fm.spoiler * sp);
       const cockpit = this.cam && this.cam.mode === 'cockpit';
+      if (N.prop) {
+        const rps = fm.engineOn || fm.engState === 'starting' ? fm.rpm / 60 : fm.tas * 0.12;
+        const fast = rps > 14;
+        // hızlı dönerken pervane bulanık disk olarak görünür
+        this.propAng = (this.propAng + Math.min(rps, fast ? 3.1 : 9) * Math.PI * 2 * dt) % (Math.PI * 2);
+        set('prop', this._ax.y, this.propAng);
+        show('blades', !fast);
+        show('propDisc', fast);
+      }
       show('fuselage', !cockpit);
       show('prop', !cockpit);
       show('flame', !!fm.afterburner);
+      const tt = performance.now() / 1000;
+      const ph = tt % 1.3;
+      show('strobe', ph < 0.06 || (ph > 0.16 && ph < 0.22));
+      show('beacon', tt % 1.1 < 0.15);
+      // iniş takımı: menteşeden katlanma, amortisör, direksiyon, dönen tekerler
       const gp = def.gear.points;
       for (let i = 0; i < gp.length; i++) {
-        const name = 'gear' + i;
-        if (!N[name]) continue;
+        const leg = N['gearLeg' + i];
+        if (!leg) continue;
         const g = gp[i];
-        const retr = def.gear.retractable ? (1 - fm.gearPos) * Math.abs(g.pos[2]) * 0.55 : 0;
+        if (leg.retractC) set('gearLeg' + i, leg.retractC, leg.retractAngle * (1 - fm.gearPos));
+        show('gearLeg' + i, !def.gear.retractable || fm.gearPos > 0.02);
         const steer = g.steer ? -fm.gearSteer * (g.pos[1] >= 0 ? 1 : -1) : 0;
-        set(name, 'z', steer, (fm.gearComp[i] || 0) + retr);
-        show(name, !def.gear.retractable || fm.gearPos > 0.04);
+        set('gear' + i, this._ax.z, steer, [0, fm.gearComp[i] || 0, 0]);
+        const contact = (fm.gearComp[i] || 0) > 0;
+        let ws = this.wheelSpd[i] || 0;
+        ws = contact ? fm.gs : def.gear.retractable && fm.gearPos < 0.9 ? 0 : ws * Math.exp(-dt * 0.4);
+        this.wheelSpd[i] = ws;
+        this.wheelRoll[i] = (this.wheelRoll[i] || 0) + ws * dt;
+        for (let k = 0; k < 4; k++) {
+          const nm = `wheel${i}_${k}`;
+          if (!N[nm]) break;
+          set(nm, this._ax.x, -((this.wheelRoll[i] / (N[nm].r || 0.3)) % (Math.PI * 2)));
+        }
       }
+      const open = clamp(fm.gearPos * 3, 0, 1);
+      for (const nm of ['doorNR', 'doorNL']) if (N[nm]) set(nm, N[nm].axisC || this._ax.y, N[nm].openAngle * open);
     }
 
     // ---------- konum ----------
