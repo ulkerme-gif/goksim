@@ -42,6 +42,20 @@ html, body {
   touch-action: none;
 }
 button, input, select { font: inherit; color: inherit; }
+/* tablette uzun basınca yazı/düğme seçilmesin, kopyala menüsü çıkmasın */
+body {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent;
+}
+input, textarea, select, [contenteditable] {
+  -webkit-user-select: text;
+  user-select: text;
+  -webkit-touch-callout: default;
+}
+button { touch-action: manipulation; }
+#touch, #touch * { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; touch-action: none; }
 button { cursor: pointer; }
 :focus-visible { outline: 2px solid var(--magenta); outline-offset: 2px; }
 kbd {
@@ -3893,7 +3907,7 @@ window.GS_AIRPORTS=[["AGGH","HIR","Honiara International Airport","Honiara","SB"
   const { clamp, approach } = GS;
 
   const TYPING = (e) => {
-    const t = e.target;
+    const t = e.target && e.target.nodeType === 3 ? e.target.parentElement : e.target;
     return t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable);
   };
 
@@ -3981,6 +3995,13 @@ window.GS_AIRPORTS=[["AGGH","HIR","Honiara International Airport","Honiara","SB"
         this.mouse.y = (e.clientY / window.innerHeight) * 2 - 1;
       });
       window.addEventListener('gamepadconnected', (e) => this.onAction('gamepad', e.gamepad.id));
+      // dokunmatikte metin seçimi ve uzun basma menüsü olmasın (yazı kutuları hariç)
+      document.addEventListener('selectstart', (e) => {
+        if (!TYPING(e)) e.preventDefault();
+      });
+      document.addEventListener('contextmenu', (e) => {
+        if (!TYPING(e) && !(e.target.closest && e.target.closest('#map'))) e.preventDefault();
+      });
     }
 
     trimStep(dir) {
@@ -4013,6 +4034,7 @@ window.GS_AIRPORTS=[["AGGH","HIR","Honiara International Airport","Honiara","SB"
         knob.style.transform = `translate(${dx * r.width * 0.35}px, ${dy * r.height * 0.35}px)`;
       };
       stick.addEventListener('pointerdown', (e) => {
+        e.preventDefault();
         sid = e.pointerId;
         stick.setPointerCapture(sid);
         this.touch.active = true;
@@ -4033,7 +4055,7 @@ window.GS_AIRPORTS=[["AGGH","HIR","Honiara International Airport","Honiara","SB"
         const r = thr.getBoundingClientRect();
         this.throttle = clamp(1 - (e.clientY - r.top) / r.height, 0, 1);
       };
-      thr.addEventListener('pointerdown', (e) => { tid = e.pointerId; thr.setPointerCapture(tid); moveThr(e); this.onAction('any'); });
+      thr.addEventListener('pointerdown', (e) => { e.preventDefault(); tid = e.pointerId; thr.setPointerCapture(tid); moveThr(e); this.onAction('any'); });
       thr.addEventListener('pointermove', (e) => { if (e.pointerId === tid) moveThr(e); });
       thr.addEventListener('pointerup', () => (tid = null));
       this.thrKnob = thrKnob;
@@ -4338,6 +4360,174 @@ window.GS_AIRPORTS=[["AGGH","HIR","Honiara International Airport","Honiara","SB"
   }
 
   GS.CameraRig = CameraRig;
+})(typeof globalThis !== 'undefined' ? globalThis : window);
+
+</script>
+  <script>
+/* GökSim — pist düzleştirme
+ * Cesium World Terrain'in yükseklik verisi pistlerde engebeli. Arazi parçaları yüklenirken
+ * pist alanındaki noktaları, pist boyunca ölçülen eğime oturan düz bir düzleme çekiyoruz.
+ * Kenarlarda yumuşak geçiş var; böylece hem görüntü hem fizik aynı düz pisti kullanır.
+ */
+(function (G) {
+  'use strict';
+  const GS = (G.GS = G.GS || {});
+  const R = 6371008.8;
+  const DEG = Math.PI / 180;
+  const FULL_W = 70; // merkez hattından bu uzaklığa kadar tamamen düz (m)
+  const BLEND_W = 170; // bu uzaklıkta araziye geri döner
+  const FULL_L = 60; // pist uçlarından sonra tamamen düz devam
+  const BLEND_L = 220;
+  const smooth = (t) => (t <= 0 ? 0 : t >= 1 ? 1 : t * t * (3 - 2 * t));
+  const clamp = (x, a, b) => (x < a ? a : x > b ? b : x);
+  const FRACS = [0, 0.2, 0.4, 0.6, 0.8, 1];
+
+  class FlatRunways {
+    constructor() {
+      this.base = null;
+      this.runways = [];
+      this.done = new Set();
+      this.pending = new Map();
+      this.onChange = null;
+    }
+
+    // Arazi sağlayıcısını sarar: yalnızca karo geometrisi isteğini değiştirir
+    wrap(base) {
+      this.base = base;
+      const self = this;
+      return new Proxy(base, {
+        get(t, prop) {
+          if (prop === 'requestTileGeometry') {
+            return (x, y, level, request) => {
+              const p = t.requestTileGeometry(x, y, level, request);
+              return p && typeof p.then === 'function' ? p.then((d) => self.flatten(d, x, y, level)) : p;
+            };
+          }
+          const v = Reflect.get(t, prop, t);
+          return typeof v === 'function' ? v.bind(t) : v;
+        },
+      });
+    }
+
+    // Pist profili ekle: iki uç (derece) ve boyunca ölçülmüş yükseklikler
+    addProfile(la1, lo1, la2, lo2, samples) {
+      const lat0 = ((la1 + la2) / 2) * DEG, lon0 = ((lo1 + lo2) / 2) * DEG, c = Math.cos(lat0);
+      const e = (lo2 - lo1) * DEG * c * R, n = (la2 - la1) * DEG * R;
+      const L = Math.hypot(e, n);
+      if (L < 200) return null;
+      let sx = 0, sy = 0, sxx = 0, sxy = 0, cnt = 0;
+      samples.forEach((h, i) => {
+        if (!isFinite(h)) return;
+        const s = (FRACS[i] - 0.5) * L;
+        sx += s; sy += h; sxx += s * s; sxy += s * h; cnt++;
+      });
+      if (cnt < 2) return null;
+      const slope = clamp((cnt * sxy - sx * sy) / (cnt * sxx - sx * sx || 1), -0.025, 0.025);
+      const h0 = (sy - slope * sx) / cnt;
+      const ext = L / 2 + BLEND_L + BLEND_W;
+      const rw = {
+        lat0, lon0, c, ux: e / L, uy: n / L, half: L / 2, h0, slope,
+        s: lat0 - ext / R, n: lat0 + ext / R, w: lon0 - ext / (R * c), e: lon0 + ext / (R * c),
+      };
+      this.runways.push(rw);
+      return rw;
+    }
+
+    // Havalimanının pistlerini ölç (bir kez); sonra karoları yeniden yükletir
+    ensureAirport(a, invalidate = true) {
+      if (!this.base || !a || this.done.has(a[0])) return Promise.resolve(false);
+      if (this.pending.has(a[0])) return this.pending.get(a[0]);
+      const job = (async () => {
+        const pts = [];
+        for (const r of a[9]) {
+          const [, la1, lo1, , la2, lo2] = r;
+          for (const f of FRACS) pts.push(Cesium.Cartographic.fromDegrees(lo1 + (lo2 - lo1) * f, la1 + (la2 - la1) * f));
+        }
+        let res;
+        try {
+          res = await Cesium.sampleTerrainMostDetailed(this.base, pts);
+        } catch (e) {
+          this.done.add(a[0]);
+          return false;
+        }
+        let k = 0, added = 0;
+        for (const r of a[9]) {
+          const [, la1, lo1, , la2, lo2] = r;
+          const hs = FRACS.map(() => res[k++].height);
+          if (this.addProfile(la1, lo1, la2, lo2, hs)) added++;
+        }
+        this.done.add(a[0]);
+        if (added && invalidate && this.onChange) this.onChange();
+        return added > 0;
+      })();
+      this.pending.set(a[0], job);
+      job.finally(() => this.pending.delete(a[0]));
+      return job;
+    }
+
+    flatten(data, x, y, level) {
+      if (level < 10 || !this.runways.length || !data || !data._quantizedVertices) return data;
+      const rect = this.base.tilingScheme.tileXYToRectangle(x, y, level);
+      const list = this.runways.filter((r) => !(r.e < rect.west || r.w > rect.east || r.n < rect.south || r.s > rect.north));
+      if (!list.length) return data;
+      const qv = data._quantizedVertices;
+      const n = qv.length / 3;
+      const minH = data._minimumHeight, range = data._maximumHeight - data._minimumHeight;
+      const W = rect.east - rect.west, H = rect.north - rect.south;
+      const hs = new Float64Array(n);
+      let changed = false, lo = Infinity, hi = -Infinity;
+      for (let i = 0; i < n; i++) {
+        const lon = rect.west + (qv[i] / 32767) * W;
+        const lat = rect.south + (qv[n + i] / 32767) * H;
+        let h = minH + (qv[2 * n + i] / 32767) * range;
+        for (const r of list) {
+          const de = (lon - r.lon0) * r.c * R, dn = (lat - r.lat0) * R;
+          const al = de * r.ux + dn * r.uy;
+          const pe = Math.abs(-de * r.uy + dn * r.ux);
+          if (pe >= BLEND_W || Math.abs(al) >= r.half + BLEND_L) continue;
+          const wp = pe <= FULL_W ? 1 : 1 - smooth((pe - FULL_W) / (BLEND_W - FULL_W));
+          const ea = Math.abs(al) - r.half;
+          const wl = ea <= FULL_L ? 1 : 1 - smooth((ea - FULL_L) / (BLEND_L - FULL_L));
+          const w = wp * wl;
+          if (w <= 0) continue;
+          const target = r.h0 + r.slope * clamp(al, -r.half, r.half);
+          h += (target - h) * w;
+          changed = true;
+        }
+        hs[i] = h;
+        if (h < lo) lo = h;
+        if (h > hi) hi = h;
+      }
+      if (!changed) return data;
+      const out = new Uint16Array(qv.length);
+      out.set(qv.subarray(0, 2 * n));
+      const rg = hi - lo || 1;
+      for (let i = 0; i < n; i++) out[2 * n + i] = Math.round(((hs[i] - lo) / rg) * 32767);
+      return new Cesium.QuantizedMeshTerrainData({
+        quantizedVertices: out,
+        indices: data._indices,
+        encodedNormals: data._encodedNormals,
+        minimumHeight: lo,
+        maximumHeight: hi,
+        boundingSphere: data._boundingSphere,
+        orientedBoundingBox: data._orientedBoundingBox,
+        horizonOcclusionPoint: data._horizonOcclusionPoint,
+        westIndices: data._westIndices,
+        southIndices: data._southIndices,
+        eastIndices: data._eastIndices,
+        northIndices: data._northIndices,
+        westSkirtHeight: data._westSkirtHeight,
+        southSkirtHeight: data._southSkirtHeight,
+        eastSkirtHeight: data._eastSkirtHeight,
+        northSkirtHeight: data._northSkirtHeight,
+        childTileMask: data._childTileMask,
+        waterMask: data._waterMask,
+        credits: data._credits,
+      });
+    }
+  }
+
+  GS.FlatRunways = FlatRunways;
 })(typeof globalThis !== 'undefined' ? globalThis : window);
 
 </script>
@@ -4963,7 +5153,14 @@ window.GS_AIRPORTS=[["AGGH","HIR","Honiara International Airport","Honiara","SB"
       this.terrainOn = false;
       this.spawnToken = 0;
       this.fps = 60;
-      this.timers = { hud: 0, map: 0, clouds: 0, scrape: 0 };
+      this.timers = { hud: 0, map: 0, clouds: 0, scrape: 0, flat: 0 };
+      // Cesium ion arazisinde pistleri düzleştir
+      this.flat = new GS.FlatRunways();
+      this.flat.onChange = () => {
+        const surf = this.viewer && this.viewer.scene.globe._surface;
+        if (surf && surf.invalidateAllTiles) surf.invalidateAllTiles();
+        this.groundHoldUntil = performance.now() + 8000;
+      };
       this.propAng = 0;
       this.sound = new GS.Sound();
       this.sound.setEnabled(this.S.sound, this.S.volume);
@@ -5149,7 +5346,7 @@ window.GS_AIRPORTS=[["AGGH","HIR","Honiara International Airport","Honiara","SB"
       let changed = false;
       if (want && !this.terrainOn) {
         try {
-          v.terrainProvider = await Cesium.createWorldTerrainAsync();
+          v.terrainProvider = this.flat.wrap(await Cesium.createWorldTerrainAsync());
           this.terrainOn = true;
           changed = true;
         } catch (e) {
@@ -5417,6 +5614,19 @@ window.GS_AIRPORTS=[["AGGH","HIR","Honiara International Airport","Honiara","SB"
       });
     }
 
+    // en yakın havalimanı (onlyNew: pistleri henüz düzleştirilmemiş olanlar)
+    nearestAirport(lat, lon, maxM, onlyNew) {
+      let best = null, bd = maxM;
+      const c = Math.cos(lat * DEG);
+      for (const a of GS.Airports.list) {
+        const dy = (a[5] - lat) * 111320, dx = (a[6] - lon) * 111320 * c;
+        if (Math.abs(dy) > bd || Math.abs(dx) > bd) continue;
+        const d = Math.hypot(dx, dy);
+        if (d < bd && !(onlyNew && this.flat.done.has(a[0]))) { bd = d; best = a; }
+      }
+      return best;
+    }
+
     async sampleGround(pts) {
       if (!this.terrainOn) return pts.map(() => 0);
       try {
@@ -5436,6 +5646,14 @@ window.GS_AIRPORTS=[["AGGH","HIR","Honiara International Airport","Honiara","SB"
       ui.hideCrash();
       this.ap.disengage();
       ui.renderAP();
+      if (this.terrainOn) {
+        const apt = o.icao ? GS.Airports.get(o.icao) : this.nearestAirport(o.lat, o.lon, 6000);
+        if (apt && !this.flat.done.has(apt[0])) {
+          ui.setLoading('Pistler düzleştiriliyor: ' + apt[0]);
+          await this.flat.ensureAirport(apt);
+          if (token !== this.spawnToken) return;
+        }
+      }
       const pts = [[o.lat, o.lon]];
       if (o.refLat != null) pts.push([o.refLat, o.refLon]);
       const gr = await this.sampleGround(pts);
@@ -5486,7 +5704,7 @@ window.GS_AIRPORTS=[["AGGH","HIR","Honiara International Airport","Honiara","SB"
       if (o.onGround && this.terrainOn) {
         // görüntülenen arazi yüksekliğine uydur
         const h = this.viewer.scene.globe.getHeight(Cesium.Cartographic.fromRadians(fm.lon, fm.lat, 0, this.carto));
-        if (h !== undefined && isFinite(h)) {
+        if (h !== undefined && isFinite(h) && Math.abs(h - ground) < 10) {
           fm.alt += h - ground;
           fm.ground = h;
           this.groundEst = h;
@@ -5761,6 +5979,10 @@ window.GS_AIRPORTS=[["AGGH","HIR","Honiara International Airport","Honiara","SB"
       const fm = this.fm;
       const h = this.viewer.scene.globe.getHeight(Cesium.Cartographic.fromRadians(fm.lon, fm.lat, 0, this.carto));
       if (h === undefined || !isFinite(h)) return;
+      // arazi karoları yeniden yüklenirken Cesium kısa süre "etek" geometrisinden çok yanlış (-binlerce m) değer verebilir
+      const jump = Math.abs(h - this.groundEst);
+      if (jump > (fm.onGround ? 12 : 400)) return;
+      if (this.groundHoldUntil && performance.now() < this.groundHoldUntil && jump > 3) return;
       const rate = fm.onGround ? 3 : 90;
       this.groundEst += clamp(h - this.groundEst, -rate * dt, rate * dt);
     }
@@ -5864,6 +6086,15 @@ window.GS_AIRPORTS=[["AGGH","HIR","Honiara International Airport","Honiara","SB"
       if (this.timers.map > 0.4) {
         this.timers.map = 0;
         this.ui.updateMap(fm);
+      }
+      this.timers.flat += dt;
+      if (this.timers.flat > 4) {
+        // uçarken yaklaşılan havalimanlarının pistlerini de önceden düzleştir
+        this.timers.flat = 0;
+        if (this.terrainOn && !this.loading) {
+          const a = this.nearestAirport(fm.lat / DEG, fm.lon / DEG, 30000, true);
+          if (a) this.flat.ensureAirport(a, false);
+        }
       }
       if (this.timers.clouds > 2) {
         this.timers.clouds = 0;
